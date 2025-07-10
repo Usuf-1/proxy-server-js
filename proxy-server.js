@@ -1,25 +1,54 @@
-const express = require('express');
-const request = require('request');
-const cors = require('cors');
+import { Router } from 'itty-router';
+import { error, json, status } from 'itty-router-extras';
 
-const app = express();
-app.use(cors());
+const router = Router();
 
 // Example usage: /proxy?url=https://stream-url.m3u8&referer=https://aniwatch.to/&userAgent=Mozilla/5.0
-app.get('/proxy', (req, res) => {
-  const { url, referer, userAgent } = req.query;
-  if (!url) return res.status(400).send('Missing url');
+router.get('/proxy', async (request) => {
+  const { searchParams } = new URL(request.url);
+  const url = searchParams.get('url');
+  const referer = searchParams.get('referer') || 'https://megacloud.blog';
+  const userAgent = searchParams.get('userAgent') || 'Mozilla/5.0';
 
-  request({
-    url,
-    headers: {
-      'Referer': referer || 'https://megacloud.blog',
-      'User-Agent': userAgent || 'Mozilla/5.0',
-    },
-  })
-    .on('error', (err) => res.status(500).send('Proxy error: ' + err.message))
-    .pipe(res);
+  if (!url) {
+    return error(400, 'Missing url');
+  }
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'Referer': referer,
+        'User-Agent': userAgent,
+      },
+    });
+
+    if (!response.ok) {
+      return error(response.status, 'Upstream request failed');
+    }
+
+    // Create a new response to avoid immutable headers
+    const { headers, status } = response;
+    const proxyResponse = new Response(response.body, {
+      headers: new Headers(headers),
+      status,
+    });
+
+    // Add CORS headers
+    proxyResponse.headers.set('Access-Control-Allow-Origin', '*');
+    proxyResponse.headers.set('Access-Control-Allow-Methods', 'GET');
+
+    return proxyResponse;
+  } catch (err) {
+    return error(500, `Proxy error: ${err.message}`);
+  }
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Proxy server running on port ${PORT}`)); 
+// 404 for everything else
+router.all('*', () => error(404, 'Not Found'));
+
+// Cloudflare Workers entry point
+export default {
+  async fetch(request, env, ctx) {
+    return router.handle(request);
+  },
+};
